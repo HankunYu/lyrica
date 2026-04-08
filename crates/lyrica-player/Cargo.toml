@@ -1,0 +1,13 @@
+[package]
+name = "lyrica-player"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lyrica-core = { path = "../lyrica-core" }
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+zbus = "5"
+futures-util = "0.3"

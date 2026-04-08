@@ -1,0 +1,13 @@
+[package]
+name = "lyrica-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { workspace = true, features = ["rc"] }
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+regex = "1"

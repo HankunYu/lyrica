@@ -1,0 +1,14 @@
+[package]
+name = "lyrica-scheduler"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lyrica-core = { path = "../lyrica-core" }
+lyrica-player = { path = "../lyrica-player" }
+lyrica-provider = { path = "../lyrica-provider" }
+lyrica-cache = { path = "../lyrica-cache" }
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true

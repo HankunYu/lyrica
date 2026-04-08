@@ -1,0 +1,48 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/lyrica-core",
+    "crates/lyrica-player",
+    "crates/lyrica-provider",
+    "crates/lyrica-cache",
+    "crates/lyrica-scheduler",
+    "crates/lyrica-display-gtk",
+    "crates/lyrica-display-tui",
+    "crates/lyrica-server",
+]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+
+[package]
+name = "lyrica"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lyrica-core = { path = "crates/lyrica-core" }
+lyrica-player = { path = "crates/lyrica-player" }
+lyrica-provider = { path = "crates/lyrica-provider" }
+lyrica-cache = { path = "crates/lyrica-cache" }
+lyrica-scheduler = { path = "crates/lyrica-scheduler" }
+lyrica-display-gtk = { path = "crates/lyrica-display-gtk", optional = true }
+lyrica-display-tui = { path = "crates/lyrica-display-tui", optional = true }
+lyrica-server = { path = "crates/lyrica-server", optional = true }
+clap = { version = "4", features = ["derive"] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+[features]
+default = ["tui", "server"]
+gtk = ["dep:lyrica-display-gtk"]
+tui = ["dep:lyrica-display-tui"]
+server = ["dep:lyrica-server"]
