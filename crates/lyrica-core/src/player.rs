@@ -53,4 +53,27 @@ pub trait PlayerBackend: Send + Sync {
 
     /// Get the estimated current playback position (interpolated).
     async fn position(&self) -> anyhow::Result<Duration>;
+
+    // --- Playback control ---
+
+    /// Toggle play/pause.
+    async fn play_pause(&self) -> anyhow::Result<()>;
+
+    /// Start playback.
+    async fn play(&self) -> anyhow::Result<()>;
+
+    /// Pause playback.
+    async fn pause(&self) -> anyhow::Result<()>;
+
+    /// Stop playback.
+    async fn stop(&self) -> anyhow::Result<()>;
+
+    /// Skip to the next track.
+    async fn next(&self) -> anyhow::Result<()>;
+
+    /// Skip to the previous track.
+    async fn previous(&self) -> anyhow::Result<()>;
+
+    /// Seek to an absolute position.
+    async fn seek_to(&self, position: Duration) -> anyhow::Result<()>;
 }

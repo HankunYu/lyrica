@@ -74,8 +74,8 @@ impl Scheduler {
                     match event {
                         PlayerEvent::TrackChanged(track) => {
                             info!(title = %track.title, artist = %track.artist, "Track changed");
+                            self.state.track = Some(track.clone());
                             self.handle_track_change(&track).await;
-                            self.state.track = Some(track);
                             self.state.playback_position = Duration::ZERO;
                             last_position_update = tokio::time::Instant::now();
                             self.update_line_index();
@@ -111,7 +111,47 @@ impl Scheduler {
                 }
                 Some(cmd) = self.cmd_rx.recv() => {
                     self.advance_position(&mut last_position_update);
-                    self.handle_command(cmd).await;
+                    match &cmd {
+                        SchedulerCommand::PlayPause => {
+                            if let Err(e) = player.play_pause().await {
+                                warn!(error = %e, "PlayPause failed");
+                            }
+                        }
+                        SchedulerCommand::Play => {
+                            if let Err(e) = player.play().await {
+                                warn!(error = %e, "Play failed");
+                            }
+                        }
+                        SchedulerCommand::Pause => {
+                            if let Err(e) = player.pause().await {
+                                warn!(error = %e, "Pause failed");
+                            }
+                        }
+                        SchedulerCommand::Stop => {
+                            if let Err(e) = player.stop().await {
+                                warn!(error = %e, "Stop failed");
+                            }
+                        }
+                        SchedulerCommand::Next => {
+                            if let Err(e) = player.next().await {
+                                warn!(error = %e, "Next failed");
+                            }
+                        }
+                        SchedulerCommand::Previous => {
+                            if let Err(e) = player.previous().await {
+                                warn!(error = %e, "Previous failed");
+                            }
+                        }
+                        SchedulerCommand::SeekTo { position_ms } => {
+                            let pos = Duration::from_millis(*position_ms);
+                            if let Err(e) = player.seek_to(pos).await {
+                                warn!(error = %e, "SeekTo failed");
+                            }
+                        }
+                        _ => {
+                            self.handle_command(cmd).await;
+                        }
+                    }
                     self.update_line_index();
                     line_timer = self.schedule_next_line();
                     self.broadcast();
@@ -199,6 +239,17 @@ impl Scheduler {
                     }
                     self.state.lyrics = Some(Arc::new(updated));
                 }
+            }
+            // Playback control commands are handled in the main loop
+            // where we have access to the player reference.
+            SchedulerCommand::PlayPause
+            | SchedulerCommand::Play
+            | SchedulerCommand::Pause
+            | SchedulerCommand::Stop
+            | SchedulerCommand::Next
+            | SchedulerCommand::Previous
+            | SchedulerCommand::SeekTo { .. } => {
+                // Handled in run() directly.
             }
         }
     }

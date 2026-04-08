@@ -83,87 +83,9 @@ RUST_LOG=lyrica_provider=debug lyrica
 
 ## HTTP API
 
-Start the API server with `--api-port <PORT>` (default: 8080).
+Start the API server with `--api-port <PORT>` (default: 8080). Provides REST endpoints for status queries, lyrics management, and playback control.
 
-### Endpoints
-
-#### `GET /api/status`
-
-Current player and track status.
-
-```json
-{
-  "track_title": "Song Name",
-  "track_artist": "Artist",
-  "track_album": "Album",
-  "playback_status": "playing",
-  "position_ms": 45000,
-  "has_lyrics": true
-}
-```
-
-#### `GET /api/lyrics`
-
-Full lyrics with current line index.
-
-```json
-{
-  "lines": [
-    { "position_ms": 12000, "content": "First line", "translation": "translated" },
-    { "position_ms": 15000, "content": "Second line", "translation": null }
-  ],
-  "current_line_index": 3
-}
-```
-
-#### `GET /api/lyrics/current`
-
-Current line only, with progress within the line (0.0 - 1.0).
-
-```json
-{
-  "content": "Current lyrics line",
-  "translation": "translated line",
-  "position_ms": 45000,
-  "progress": 0.65
-}
-```
-
-#### `POST /api/lyrics/search`
-
-Search for lyrics by title and artist.
-
-```json
-{ "title": "Song Name", "artist": "Artist" }
-```
-
-#### `POST /api/lyrics/select`
-
-Select a candidate from search results by index.
-
-```json
-{ "index": 0 }
-```
-
-#### `POST /api/lyrics/set`
-
-Set lyrics from raw LRC text.
-
-```json
-{ "lrc": "[00:12.00]First line\n[00:15.00]Second line" }
-```
-
-#### `POST /api/lyrics/offset`
-
-Adjust or set lyrics time offset.
-
-```json
-{ "adjust_ms": 100 }
-```
-
-```json
-{ "set_ms": 0 }
-```
+See [Docs/API.md](Docs/API.md) for full endpoint documentation.
 
 ## Architecture
 

@@ -90,6 +90,15 @@ impl MprisPlayer {
     }
 }
 
+impl MprisPlayer {
+    /// Call a simple MPRIS method (no arguments) on the current player.
+    async fn call_player_method(&self, method: &str) -> Result<()> {
+        let proxy = self.make_proxy().await?;
+        proxy.call_noreply(method, &()).await?;
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl PlayerBackend for MprisPlayer {
     async fn subscribe(&self) -> Result<mpsc::Receiver<PlayerEvent>> {
@@ -141,6 +150,48 @@ impl PlayerBackend for MprisPlayer {
         } else {
             Ok(self.last_known_position)
         }
+    }
+
+    async fn play_pause(&self) -> Result<()> {
+        self.call_player_method("PlayPause").await
+    }
+
+    async fn play(&self) -> Result<()> {
+        self.call_player_method("Play").await
+    }
+
+    async fn pause(&self) -> Result<()> {
+        self.call_player_method("Pause").await
+    }
+
+    async fn stop(&self) -> Result<()> {
+        self.call_player_method("Stop").await
+    }
+
+    async fn next(&self) -> Result<()> {
+        self.call_player_method("Next").await
+    }
+
+    async fn previous(&self) -> Result<()> {
+        self.call_player_method("Previous").await
+    }
+
+    async fn seek_to(&self, position: Duration) -> Result<()> {
+        let proxy = self.make_proxy().await?;
+        // MPRIS2 SetPosition requires the track object path and position in microseconds.
+        // Read current track id to use as the object path.
+        let metadata: std::collections::HashMap<String, zbus::zvariant::OwnedValue> =
+            proxy.get_property("Metadata").await.unwrap_or_default();
+        let track_id = get_metadata_string(&metadata, "mpris:trackid")
+            .unwrap_or_else(|| "/org/mpris/MediaPlayer2/TrackList/NoTrack".to_string());
+        let track_path = zbus::zvariant::ObjectPath::try_from(track_id.as_str())
+            .unwrap_or_else(|_| {
+                zbus::zvariant::ObjectPath::from_static_str("/org/mpris/MediaPlayer2/TrackList/NoTrack")
+                    .unwrap()
+            });
+        let pos_us = position.as_micros() as i64;
+        proxy.call_noreply("SetPosition", &(track_path, pos_us)).await?;
+        Ok(())
     }
 }
 

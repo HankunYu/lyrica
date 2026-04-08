@@ -48,6 +48,20 @@ pub enum SchedulerCommand {
     AdjustOffset { delta_ms: i64 },
     /// Set lyrics offset to an absolute value in milliseconds.
     SetOffset { offset_ms: i64 },
+    /// Toggle play/pause.
+    PlayPause,
+    /// Start playback.
+    Play,
+    /// Pause playback.
+    Pause,
+    /// Stop playback.
+    Stop,
+    /// Skip to the next track.
+    Next,
+    /// Skip to the previous track.
+    Previous,
+    /// Seek to an absolute position in milliseconds.
+    SeekTo { position_ms: u64 },
 }
 
 /// Trait for display backends (GTK, TUI, HTTP API).

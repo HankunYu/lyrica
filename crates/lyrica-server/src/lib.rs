@@ -50,6 +50,13 @@ impl DisplayBackend for ApiServer {
             .route("/api/lyrics/select", post(post_select))
             .route("/api/lyrics/set", post(post_set_lyrics))
             .route("/api/lyrics/offset", post(post_offset))
+            .route("/api/player/play-pause", post(post_play_pause))
+            .route("/api/player/play", post(post_play))
+            .route("/api/player/pause", post(post_pause))
+            .route("/api/player/stop", post(post_stop))
+            .route("/api/player/next", post(post_next))
+            .route("/api/player/previous", post(post_previous))
+            .route("/api/player/seek", post(post_seek))
             .with_state(app_state);
 
         let addr = format!("0.0.0.0:{}", self.port);
@@ -154,6 +161,12 @@ struct OffsetBody {
     adjust: Option<i64>,
 }
 
+#[derive(Deserialize)]
+struct SeekBody {
+    /// Absolute position in milliseconds.
+    position_ms: u64,
+}
+
 // --- GET handlers ---
 
 async fn get_status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
@@ -220,7 +233,9 @@ async fn get_current_line(State(state): State<Arc<AppState>>) -> Json<CurrentLin
             line_progress.min(1.0),
         )
     } else {
-        (None, None, 0.0)
+        // No lyrics — show track title and artist instead.
+        let fallback = s.track.as_ref().map(|t| format!("{} - {}", t.title, t.artist));
+        (fallback, None, 0.0)
     };
 
     Json(CurrentLineResponse {
@@ -394,4 +409,59 @@ async fn post_offset(
             message: format!("Failed: {}", e),
         }),
     }
+}
+
+// --- Playback control handlers ---
+
+async fn send_player_cmd(
+    state: &AppState,
+    cmd: SchedulerCommand,
+    label: &str,
+) -> Json<CommandResponse> {
+    match state.cmd_tx.send(cmd).await {
+        Ok(()) => Json(CommandResponse {
+            ok: true,
+            message: format!("{} sent", label),
+        }),
+        Err(e) => Json(CommandResponse {
+            ok: false,
+            message: format!("Failed: {}", e),
+        }),
+    }
+}
+
+async fn post_play_pause(State(state): State<Arc<AppState>>) -> Json<CommandResponse> {
+    send_player_cmd(&state, SchedulerCommand::PlayPause, "PlayPause").await
+}
+
+async fn post_play(State(state): State<Arc<AppState>>) -> Json<CommandResponse> {
+    send_player_cmd(&state, SchedulerCommand::Play, "Play").await
+}
+
+async fn post_pause(State(state): State<Arc<AppState>>) -> Json<CommandResponse> {
+    send_player_cmd(&state, SchedulerCommand::Pause, "Pause").await
+}
+
+async fn post_stop(State(state): State<Arc<AppState>>) -> Json<CommandResponse> {
+    send_player_cmd(&state, SchedulerCommand::Stop, "Stop").await
+}
+
+async fn post_next(State(state): State<Arc<AppState>>) -> Json<CommandResponse> {
+    send_player_cmd(&state, SchedulerCommand::Next, "Next").await
+}
+
+async fn post_previous(State(state): State<Arc<AppState>>) -> Json<CommandResponse> {
+    send_player_cmd(&state, SchedulerCommand::Previous, "Previous").await
+}
+
+async fn post_seek(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SeekBody>,
+) -> Json<CommandResponse> {
+    send_player_cmd(
+        &state,
+        SchedulerCommand::SeekTo { position_ms: body.position_ms },
+        "Seek",
+    )
+    .await
 }
