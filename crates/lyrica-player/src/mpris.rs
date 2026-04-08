@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use zbus::Connection;
 use zbus::zvariant::OwnedValue;
 
@@ -225,16 +225,13 @@ async fn run_event_loop(
     let mut signal_stream = proxy.receive_all_signals().await?;
 
     let mut last_track_id = String::new();
-    let mut last_position = read_position(&proxy).await;
     let mut consecutive_errors = 0u32;
 
-    // Read initial state and emit events.
+    // Read initial state for tracking (don't emit events — scheduler already has initial state).
     if let Ok(Some(track)) = read_track(&proxy).await {
         last_track_id = track.id.clone();
-        let _ = tx.send(PlayerEvent::TrackChanged(track)).await;
     }
     let mut last_status = read_status(&proxy).await;
-    let _ = tx.send(PlayerEvent::PlaybackStateChanged(last_status)).await;
 
     let mut interval = tokio::time::interval(Duration::from_secs(1));
 
@@ -248,10 +245,15 @@ async fn run_event_loop(
                 let is_seeked = msg.header().member().is_some_and(|m| m.as_str() == "Seeked");
 
                 if is_seeked {
-                    // Handle Seeked signal directly.
-                    let position = read_position(&proxy).await;
-                    debug!(position_ms = position.as_millis(), "Seeked signal received");
-                    last_position = position;
+                    // Read position from signal body: MPRIS2 Seeked(x) is a single int64 in microseconds.
+                    let position = match msg.body().deserialize::<(i64,)>() {
+                        Ok((pos_us,)) => Duration::from_micros(pos_us.max(0) as u64),
+                        Err(e) => {
+                            warn!(error = %e, "Failed to deserialize Seeked signal body, reading property");
+                            read_position(&proxy).await
+                        }
+                    };
+                    info!(position_ms = position.as_millis(), "Seeked signal received");
                     let _ = tx.send(PlayerEvent::Seeked(position)).await;
                 }
 
@@ -266,20 +268,6 @@ async fn run_event_loop(
                 }
             }
             _ = interval.tick() => {
-                // Detect seek by position jump (fallback for players that don't emit Seeked signal).
-                let position = read_position(&proxy).await;
-                let diff = if position > last_position {
-                    position - last_position
-                } else {
-                    last_position - position
-                };
-                // If position jumped more than 2 seconds from expected, treat as seek.
-                if diff > Duration::from_secs(2) {
-                    debug!(position_ms = position.as_millis(), "Seek detected via polling");
-                    let _ = tx.send(PlayerEvent::Seeked(position)).await;
-                }
-                last_position = position;
-
                 match check_state_changes(&proxy, tx, &mut last_track_id, &mut last_status).await {
                     Ok(()) => { consecutive_errors = 0; }
                     Err(_) => {
@@ -393,9 +381,30 @@ async fn read_status(proxy: &zbus::Proxy<'_>) -> PlaybackStatus {
 }
 
 async fn read_position(proxy: &zbus::Proxy<'_>) -> Duration {
-    let pos_us: i64 = proxy
-        .get_property("Position")
-        .await
-        .unwrap_or(0);
-    Duration::from_micros(pos_us.max(0) as u64)
+    // Try i64 first (MPRIS2 spec), then u64 (some players use unsigned).
+    if let Ok(pos_us) = proxy.get_property::<i64>("Position").await {
+        return Duration::from_micros(pos_us.max(0) as u64);
+    }
+    if let Ok(pos_us) = proxy.get_property::<u64>("Position").await {
+        return Duration::from_micros(pos_us);
+    }
+    // Fallback: read as OwnedValue and try to extract.
+    match proxy.get_property::<zbus::zvariant::OwnedValue>("Position").await {
+        Ok(val) => {
+            let pos_us = i64::try_from(&*val)
+                .map(|v| v.max(0) as u64)
+                .or_else(|_| u64::try_from(&*val))
+                .unwrap_or(0);
+            if pos_us > 0 {
+                info!(position_us = pos_us, "Position read via OwnedValue fallback");
+            } else {
+                warn!("Position property returned 0 or unreadable");
+            }
+            Duration::from_micros(pos_us)
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to read Position property");
+            Duration::ZERO
+        }
+    }
 }
