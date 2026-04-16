@@ -145,7 +145,11 @@ fn run_tui(
         }
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
+            let evt = event::read()?;
+            if let Event::Resize(_, _) = &evt {
+                needs_redraw = true;
+            }
+            if let Event::Key(key) = evt {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
