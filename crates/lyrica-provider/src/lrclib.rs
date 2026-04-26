@@ -43,6 +43,10 @@ impl LyricsProvider for LrclibProvider {
         "LRCLIB"
     }
 
+    fn key(&self) -> &str {
+        "lrclib"
+    }
+
     async fn search(&self, request: &SearchRequest) -> Result<Vec<lyrics::Lyrics>> {
         let url = format!("{}/search", LRCLIB_API);
         let query = format!("{} {}", request.title, request.artist);

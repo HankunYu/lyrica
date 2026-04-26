@@ -6,19 +6,32 @@ use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
 use lyrica_core::display::{DisplayState, SchedulerCommand};
-use lyrica_core::lyrics;
+use lyrica_core::lyrics::{self, Lyrics};
 use lyrica_core::player::{PlaybackStatus, PlayerBackend, PlayerEvent};
 use lyrica_core::provider::SearchRequest;
 use lyrica_cache::LyricsCache;
 use lyrica_provider::ProviderGroup;
 
+/// Result of a background lyrics search, tagged with the track it was for so
+/// the main loop can drop stale results from rapid track switches.
+struct LyricsSearchResult {
+    track_id: String,
+    title: String,
+    artist: String,
+    result: Result<Option<Lyrics>>,
+}
+
 /// Core scheduler that orchestrates the lyrics lifecycle.
 pub struct Scheduler {
-    provider: ProviderGroup,
+    provider: Arc<ProviderGroup>,
     cache: LyricsCache,
     state_tx: watch::Sender<DisplayState>,
     cmd_rx: mpsc::Receiver<SchedulerCommand>,
     state: DisplayState,
+    /// Sender side handed to background search tasks.
+    search_tx: mpsc::Sender<LyricsSearchResult>,
+    /// Receiver side polled by the main loop.
+    search_rx: mpsc::Receiver<LyricsSearchResult>,
 }
 
 impl Scheduler {
@@ -28,12 +41,15 @@ impl Scheduler {
         state_tx: watch::Sender<DisplayState>,
         cmd_rx: mpsc::Receiver<SchedulerCommand>,
     ) -> Self {
+        let (search_tx, search_rx) = mpsc::channel(8);
         Self {
-            provider,
+            provider: Arc::new(provider),
             cache,
             state_tx,
             cmd_rx,
             state: DisplayState::default(),
+            search_tx,
+            search_rx,
         }
     }
 
@@ -49,8 +65,8 @@ impl Scheduler {
 
         if let Some(track) = initial.track {
             info!(title = %track.title, artist = %track.artist, "Initial track detected");
-            self.handle_track_change(&track).await;
-            self.state.track = Some(track);
+            self.state.track = Some(track.clone());
+            self.handle_track_change(&track);
         }
 
         self.broadcast();
@@ -75,9 +91,13 @@ impl Scheduler {
                         PlayerEvent::TrackChanged(track) => {
                             info!(title = %track.title, artist = %track.artist, "Track changed");
                             self.state.track = Some(track.clone());
-                            self.handle_track_change(&track).await;
+                            // New track starts at 0 from the player's perspective;
+                            // a Seeked event will correct this if the player reports otherwise.
                             self.state.playback_position = Duration::ZERO;
                             last_position_update = tokio::time::Instant::now();
+                            // Search runs in the background; the result arrives via search_rx
+                            // and is applied without blocking this loop.
+                            self.handle_track_change(&track);
                             self.update_line_index();
                             line_timer = self.schedule_next_line();
                             self.broadcast();
@@ -149,9 +169,16 @@ impl Scheduler {
                             }
                         }
                         _ => {
-                            self.handle_command(cmd).await;
+                            self.handle_command(&cmd);
                         }
                     }
+                    self.update_line_index();
+                    line_timer = self.schedule_next_line();
+                    self.broadcast();
+                }
+                Some(found) = self.search_rx.recv() => {
+                    self.advance_position(&mut last_position_update);
+                    self.apply_search_result(found);
                     self.update_line_index();
                     line_timer = self.schedule_next_line();
                     self.broadcast();
@@ -177,25 +204,38 @@ impl Scheduler {
         }
     }
 
-    /// Handle a scheduler command from API / display backend.
-    async fn handle_command(&mut self, cmd: SchedulerCommand) {
+    /// Handle a scheduler command from API / display backend. Synchronous;
+    /// long-running searches dispatched here are spawned in the background.
+    fn handle_command(&mut self, cmd: &SchedulerCommand) {
         match cmd {
             SchedulerCommand::ResearchCurrent => {
                 info!("Manual re-search requested");
                 if let Some(ref track) = self.state.track {
                     let track = track.clone();
-                    self.force_search(&track.title, &track.artist, track.album.as_deref(), track.duration).await;
+                    self.spawn_search(
+                        &track.id,
+                        &track.title,
+                        &track.artist,
+                        track.album.as_deref(),
+                        track.duration,
+                    );
                 } else {
                     warn!("No track to re-search");
                 }
             }
             SchedulerCommand::SearchCustom { title, artist } => {
                 info!(title = %title, artist = %artist, "Custom search requested");
-                self.force_search(&title, &artist, None, None).await;
+                let track_id = self
+                    .state
+                    .track
+                    .as_ref()
+                    .map(|t| t.id.clone())
+                    .unwrap_or_default();
+                self.spawn_search(&track_id, title, artist, None, None);
             }
             SchedulerCommand::SetLyrics { lrc_text } => {
                 info!("Manual lyrics set");
-                match lyrics::lrc::parse(&lrc_text) {
+                match lyrics::lrc::parse(lrc_text) {
                     Ok(parsed) => {
                         if let Some(ref track) = self.state.track {
                             let _ = self.cache.put(&track.title, &track.artist, &parsed);
@@ -214,14 +254,14 @@ impl Scheduler {
                     "Applying selected lyrics"
                 );
                 if let Some(ref track) = self.state.track {
-                    let _ = self.cache.put(&track.title, &track.artist, &lyrics);
+                    let _ = self.cache.put(&track.title, &track.artist, lyrics);
                 }
-                self.state.lyrics = Some(lyrics);
+                self.state.lyrics = Some(lyrics.clone());
             }
             SchedulerCommand::AdjustOffset { delta_ms } => {
                 if let Some(ref lyrics) = self.state.lyrics {
                     let mut updated = (**lyrics).clone();
-                    updated.offset_ms += delta_ms;
+                    updated.offset_ms += *delta_ms;
                     info!(offset_ms = updated.offset_ms, "Offset adjusted");
                     if let Some(ref track) = self.state.track {
                         let _ = self.cache.put(&track.title, &track.artist, &updated);
@@ -232,7 +272,7 @@ impl Scheduler {
             SchedulerCommand::SetOffset { offset_ms } => {
                 if let Some(ref lyrics) = self.state.lyrics {
                     let mut updated = (**lyrics).clone();
-                    updated.offset_ms = offset_ms;
+                    updated.offset_ms = *offset_ms;
                     info!(offset_ms, "Offset set");
                     if let Some(ref track) = self.state.track {
                         let _ = self.cache.put(&track.title, &track.artist, &updated);
@@ -254,68 +294,96 @@ impl Scheduler {
         }
     }
 
-    /// Search providers ignoring cache.
-    async fn force_search(&mut self, title: &str, artist: &str, album: Option<&str>, duration: Option<Duration>) {
+    /// Handle a track change: synchronous cache check, then spawn background
+    /// search if needed. Never blocks the main loop on the network.
+    fn handle_track_change(&mut self, track: &lyrica_core::player::Track) {
         self.state.lyrics = None;
         self.state.current_line_index = None;
         self.state.next_line_index = None;
 
-        let request = SearchRequest {
-            title: title.to_string(),
-            artist: artist.to_string(),
-            album: album.map(|s| s.to_string()),
-            duration,
-        };
-
-        match self.provider.search(&request).await {
-            Ok(Some(found)) => {
-                // Cache with the current track's identity.
-                if let Some(ref track) = self.state.track {
-                    let _ = self.cache.put(&track.title, &track.artist, &found);
-                }
-                info!(
-                    source = %found.metadata.source,
-                    lines = found.lines.len(),
-                    "Lyrics found via manual search"
-                );
-                self.state.lyrics = Some(Arc::new(found));
-            }
-            Ok(None) => {
-                info!("No lyrics found");
-            }
-            Err(e) => {
-                warn!(error = %e, "Search failed");
-            }
-        }
-    }
-
-    /// Handle a track change: search cache then providers.
-    async fn handle_track_change(&mut self, track: &lyrica_core::player::Track) {
-        self.state.lyrics = None;
-        self.state.current_line_index = None;
-        self.state.next_line_index = None;
-
-        // Check cache first.
         if let Some(cached) = self.cache.get(&track.title, &track.artist) {
             info!("Using cached lyrics");
             self.state.lyrics = Some(Arc::new(cached));
             return;
         }
 
-        // Search providers.
-        let request = SearchRequest {
-            title: track.title.clone(),
-            artist: track.artist.clone(),
-            album: track.album.clone(),
-            duration: track.duration,
-        };
+        self.spawn_search(
+            &track.id,
+            &track.title,
+            &track.artist,
+            track.album.as_deref(),
+            track.duration,
+        );
+    }
 
-        match self.provider.search(&request).await {
-            Ok(Some(found)) => {
-                if let Err(e) = self.cache.put(&track.title, &track.artist, &found) {
+    /// Spawn a background lyrics search; result is delivered via search_tx.
+    fn spawn_search(
+        &self,
+        track_id: &str,
+        title: &str,
+        artist: &str,
+        album: Option<&str>,
+        duration: Option<Duration>,
+    ) {
+        let provider = self.provider.clone();
+        let tx = self.search_tx.clone();
+        let track_id = track_id.to_string();
+        let title = title.to_string();
+        let artist = artist.to_string();
+        let album = album.map(|s| s.to_string());
+
+        tokio::spawn(async move {
+            let request = SearchRequest {
+                title: title.clone(),
+                artist: artist.clone(),
+                album,
+                duration,
+            };
+            let result = provider.search(&request).await;
+            let _ = tx
+                .send(LyricsSearchResult {
+                    track_id,
+                    title,
+                    artist,
+                    result,
+                })
+                .await;
+        });
+    }
+
+    /// Apply a background search result iff it still matches the current track.
+    fn apply_search_result(&mut self, found: LyricsSearchResult) {
+        // Drop stale results from rapid track switches. Match on track id when
+        // available, otherwise fall back to title+artist.
+        let stale = match self.state.track.as_ref() {
+            Some(current) => {
+                if !found.track_id.is_empty() && !current.id.is_empty() {
+                    found.track_id != current.id
+                } else {
+                    found.title != current.title || found.artist != current.artist
+                }
+            }
+            None => true,
+        };
+        if stale {
+            info!(
+                track = %found.title,
+                "Discarding stale search result (track changed)"
+            );
+            return;
+        }
+
+        match found.result {
+            Ok(Some(lyrics)) => {
+                if let Err(e) = self.cache.put(&found.title, &found.artist, &lyrics) {
                     warn!(error = %e, "Failed to cache lyrics");
                 }
-                self.state.lyrics = Some(Arc::new(found));
+                info!(
+                    source = %lyrics.metadata.source,
+                    lines = lyrics.lines.len(),
+                    "Applying lyrics from background search"
+                );
+                self.state.lyrics = Some(Arc::new(lyrics));
             }
             Ok(None) => {
                 info!("No lyrics found");

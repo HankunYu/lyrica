@@ -53,6 +53,21 @@ impl std::fmt::Display for LyricsSource {
     }
 }
 
+impl LyricsSource {
+    /// Stable lowercase key matching `LyricsProvider::key()`, used to look up
+    /// per-provider weights in `Config`. `None` for sources that have no
+    /// associated provider (Local / Unknown).
+    pub fn config_key(&self) -> Option<&'static str> {
+        match self {
+            Self::Lrclib => Some("lrclib"),
+            Self::NetEase => Some("netease"),
+            Self::QQMusic => Some("qqmusic"),
+            Self::Kugou => Some("kugou"),
+            Self::Local | Self::Unknown => None,
+        }
+    }
+}
+
 /// Metadata associated with lyrics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LyricsMetadata {

@@ -15,11 +15,13 @@ members = [
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
 reqwest = { version = "0.12", features = ["json"] }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
+notify = "8"
 
 [package]
 name = "lyrica"
@@ -40,6 +42,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+notify.workspace = true
 
 [features]
 default = ["tui", "server"]

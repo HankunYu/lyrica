@@ -1,11 +1,15 @@
 use std::fs;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use tokio::sync::{mpsc, watch};
-use tracing::info;
+use tracing::{info, warn};
 
+use lyrica_core::config::Config;
 use lyrica_core::display::DisplayState;
+use lyrica_provider::{WeightsHandle, weights_from_config};
 
 #[derive(Parser)]
 #[command(name = "lyrica", about = "Desktop lyrics display for Linux")]
@@ -24,6 +28,90 @@ enum DisplayMode {
     Tui,
     /// Headless mode (API server only).
     Headless,
+}
+
+/// Watch the config file and hot-reload provider weights on change.
+/// Other config fields (player, api_port, ...) are not hot-reloadable;
+/// changes to those are logged and require a restart.
+fn spawn_config_watcher(weights: WeightsHandle) {
+    let config_path = Config::default_path();
+    let watch_dir = match config_path.parent() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            warn!("Config has no parent directory; hot reload disabled");
+            return;
+        }
+    };
+
+    if !watch_dir.exists() {
+        info!(path = %watch_dir.display(), "Config dir missing; hot reload disabled");
+        return;
+    }
+
+    // Channel from the OS watcher (sync) into our async debouncer.
+    let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<()>();
+    let target = config_path.clone();
+
+    let mut watcher = match notify::recommended_watcher(move |res: notify::Result<Event>| {
+        let Ok(event) = res else { return };
+        let relevant = matches!(
+            event.kind,
+            EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+        );
+        if !relevant {
+            return;
+        }
+        // Editors often write via a sibling temp file + rename; coalesce by
+        // checking that any event in the directory touched our file (or is
+        // the rename target). We just trigger on anything and let the
+        // reload re-read the file.
+        if event.paths.iter().any(|p| p == &target) || event.paths.is_empty() {
+            let _ = raw_tx.send(());
+        }
+    }) {
+        Ok(w) => w,
+        Err(e) => {
+            warn!(error = %e, "Failed to start config watcher; hot reload disabled");
+            return;
+        }
+    };
+
+    if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::NonRecursive) {
+        warn!(path = %watch_dir.display(), error = %e, "Failed to watch config dir");
+        return;
+    }
+
+    info!(path = %config_path.display(), "Hot-reloading provider weights on change");
+
+    tokio::spawn(async move {
+        // Move the watcher into the task so its lifetime matches the loop.
+        let _watcher = watcher;
+        // Track the previously-applied weights so we only log on real changes.
+        let mut last_weights = weights.read().map(|g| g.clone()).unwrap_or_default();
+
+        while raw_rx.recv().await.is_some() {
+            // Debounce: drain any further events that arrive within ~150 ms.
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            while raw_rx.try_recv().is_ok() {}
+
+            let new_config = Config::load();
+            let new_weights = weights_from_config(&new_config);
+
+            if new_weights != last_weights {
+                if let Ok(mut guard) = weights.write() {
+                    *guard = new_weights.clone();
+                }
+                let mut diffs: Vec<String> = new_weights
+                    .iter()
+                    .filter(|(k, v)| last_weights.get(*k) != Some(*v))
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect();
+                diffs.sort();
+                info!(changes = ?diffs, "Reloaded provider weights");
+                last_weights = new_weights;
+            }
+        }
+    });
 }
 
 fn log_path() -> std::path::PathBuf {
@@ -71,23 +159,29 @@ async fn main() -> Result<()> {
 
     info!("Lyrica starting...");
 
+    let config = Config::load();
+
     // Create the shared state channel.
     let (state_tx, state_rx) = watch::channel(DisplayState::default());
 
     // Create the command channel for API → scheduler communication.
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
 
-    // Initialize components.
-    let player = lyrica_player::MprisPlayer::new("").await?;
-    let provider = lyrica_provider::ProviderGroup::with_all_providers();
+    // Initialize components. All ProviderGroups share one weights handle so
+    // hot-reload updates propagate to scheduler / API / TUI at once.
+    let player = lyrica_player::MprisPlayer::new(&config.player, config.strict_player).await?;
+    let provider = lyrica_provider::ProviderGroup::with_config(&config);
+    let weights_handle = provider.weights_handle();
     let cache = lyrica_cache::LyricsCache::new(None)?;
     let mut scheduler = lyrica_scheduler::Scheduler::new(provider, cache, state_tx, cmd_rx);
+
+    spawn_config_watcher(weights_handle.clone());
 
     // Start the API server if requested.
     if cli.api_port > 0 {
         let api_rx = state_rx.clone();
         let api_cmd_tx = cmd_tx.clone();
-        let api_provider = lyrica_provider::ProviderGroup::with_all_providers();
+        let api_provider = lyrica_provider::ProviderGroup::with_shared_weights(&config, weights_handle.clone());
         let port = cli.api_port;
         tokio::spawn(async move {
             let mut server = lyrica_server::ApiServer::new(port, api_cmd_tx, api_provider);
@@ -103,7 +197,7 @@ async fn main() -> Result<()> {
         DisplayMode::Tui => {
             let tui_rx = state_rx.clone();
             let tui_cmd_tx = cmd_tx.clone();
-            let tui_provider = lyrica_provider::ProviderGroup::with_all_providers();
+            let tui_provider = lyrica_provider::ProviderGroup::with_shared_weights(&config, weights_handle.clone());
             let tui_handle = tokio::spawn(async move {
                 let mut tui = lyrica_display_tui::TuiDisplay::new(tui_cmd_tx, tui_provider);
                 use lyrica_core::display::DisplayBackend;

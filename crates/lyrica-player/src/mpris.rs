@@ -16,6 +16,8 @@ use lyrica_core::player::{
 pub struct MprisPlayer {
     connection: Connection,
     preferred_player: String,
+    /// When true and `preferred_player` is set, never fall back to another player.
+    strict: bool,
     current_player: Option<String>,
     last_known_position: Duration,
     last_position_time: Instant,
@@ -23,7 +25,7 @@ pub struct MprisPlayer {
 }
 
 impl MprisPlayer {
-    pub async fn new(preferred_player: &str) -> Result<Self> {
+    pub async fn new(preferred_player: &str, strict: bool) -> Result<Self> {
         let connection = Connection::session()
             .await
             .context("Failed to connect to D-Bus session bus")?;
@@ -31,6 +33,7 @@ impl MprisPlayer {
         let mut player = Self {
             connection,
             preferred_player: preferred_player.to_string(),
+            strict,
             current_player: None,
             last_known_position: Duration::ZERO,
             last_position_time: Instant::now(),
@@ -57,18 +60,31 @@ impl MprisPlayer {
             return Ok(());
         }
 
-        let selected = if !self.preferred_player.is_empty() {
+        let matched = if !self.preferred_player.is_empty() {
             mpris_names
                 .iter()
                 .find(|n| n.to_lowercase().contains(&self.preferred_player.to_lowercase()))
                 .cloned()
         } else {
             None
-        }
-        .unwrap_or_else(|| mpris_names[0].clone());
+        };
 
-        info!(player = %selected, "Selected MPRIS player");
-        self.current_player = Some(selected);
+        let selected = match matched {
+            Some(name) => Some(name),
+            None if self.strict && !self.preferred_player.is_empty() => {
+                info!(
+                    preferred = %self.preferred_player,
+                    "Preferred player not present (strict mode), waiting"
+                );
+                None
+            }
+            None => Some(mpris_names[0].clone()),
+        };
+
+        if let Some(ref name) = selected {
+            info!(player = %name, "Selected MPRIS player");
+        }
+        self.current_player = selected;
         Ok(())
     }
 
@@ -105,9 +121,10 @@ impl PlayerBackend for MprisPlayer {
         let (tx, rx) = mpsc::channel(64);
         let connection = self.connection.clone();
         let preferred = self.preferred_player.clone();
+        let strict = self.strict;
 
         tokio::spawn(async move {
-            run_resilient_loop(connection, preferred, tx).await;
+            run_resilient_loop(connection, preferred, strict, tx).await;
         });
 
         Ok(rx)
@@ -195,8 +212,9 @@ impl PlayerBackend for MprisPlayer {
     }
 }
 
-/// Find an MPRIS player on the bus. Returns None if no player found.
-async fn find_player(connection: &Connection, preferred: &str) -> Option<String> {
+/// Find an MPRIS player on the bus. Returns None if no player found, or in
+/// strict mode when the preferred player is not present.
+async fn find_player(connection: &Connection, preferred: &str, strict: bool) -> Option<String> {
     let proxy = zbus::fdo::DBusProxy::new(connection).await.ok()?;
     let names = proxy.list_names().await.ok()?;
 
@@ -217,6 +235,9 @@ async fn find_player(connection: &Connection, preferred: &str) -> Option<String>
         {
             return Some(found.clone());
         }
+        if strict {
+            return None;
+        }
     }
 
     Some(mpris_names[0].clone())
@@ -226,12 +247,13 @@ async fn find_player(connection: &Connection, preferred: &str) -> Option<String>
 async fn run_resilient_loop(
     connection: Connection,
     preferred: String,
+    strict: bool,
     tx: mpsc::Sender<PlayerEvent>,
 ) {
     loop {
         // Wait until we find a player.
         let bus_name = loop {
-            if let Some(name) = find_player(&connection, &preferred).await {
+            if let Some(name) = find_player(&connection, &preferred, strict).await {
                 break name;
             }
             // No player found, wait and retry.
