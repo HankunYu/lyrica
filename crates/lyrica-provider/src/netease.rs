@@ -68,6 +68,10 @@ impl LyricsProvider for NeteaseProvider {
         "NetEase"
     }
 
+    fn key(&self) -> &str {
+        "netease"
+    }
+
     async fn search(&self, request: &SearchRequest) -> Result<Vec<lyrics::Lyrics>> {
         // Step 1: Search for the song.
         let query = format!("{} {}", request.title, request.artist);

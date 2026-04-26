@@ -59,6 +59,10 @@ impl LyricsProvider for KugouProvider {
         "Kugou"
     }
 
+    fn key(&self) -> &str {
+        "kugou"
+    }
+
     async fn search(&self, request: &SearchRequest) -> Result<Vec<lyrics::Lyrics>> {
         let query = format!("{} {}", request.title, request.artist);
 

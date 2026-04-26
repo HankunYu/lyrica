@@ -59,6 +59,10 @@ impl LyricsProvider for QQMusicProvider {
         "QQ Music"
     }
 
+    fn key(&self) -> &str {
+        "qqmusic"
+    }
+
     async fn search(&self, request: &SearchRequest) -> Result<Vec<lyrics::Lyrics>> {
         let query = format!("{} {}", request.title, request.artist);
 
