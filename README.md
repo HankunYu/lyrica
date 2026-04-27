@@ -1,12 +1,14 @@
 # Lyrica
 
-A Linux desktop lyrics display tool. This is a Linux variant of [LyricsX](https://github.com/MxIris-LyricsX-Project/LyricsX), the popular macOS/iOS lyrics app.
+A terminal lyrics display tool for Linux and macOS. Inspired by [LyricsX](https://github.com/MxIris-LyricsX-Project/LyricsX) on macOS/iOS.
 
-Automatically detects the currently playing song via MPRIS, searches lyrics from multiple sources, and displays them in sync with playback.
+Automatically detects the currently playing song from your music player, searches lyrics from multiple sources, and displays them in sync with playback in the terminal.
 
 ## Features
 
-- **MPRIS Integration** — Works with any Linux music player (Spotify, VLC, mpv, Firefox, Chrome, etc.)
+- **Cross-platform Player Detection**
+  - **Linux:** any MPRIS player (Spotify, VLC, mpv, Firefox, Chrome, ...)
+  - **macOS:** Spotify and Music.app via AppleScript
 - **Multi-source Lyrics Search** — NetEase Cloud Music, QQ Music, Kugou, LRCLIB
 - **Parallel Search with Priority Window** — Searches all sources concurrently, picks the best match
 - **Configurable Provider Weights** — Bias the ranking toward your preferred source (or disable a source) via TOML config
@@ -39,8 +41,8 @@ cargo build --release
 ### Dependencies
 
 - Rust 1.85+ (edition 2024)
-- D-Bus (for MPRIS, should already be present on any Linux desktop)
-- OpenSSL
+- **Linux:** D-Bus (for MPRIS, present on any desktop) + OpenSSL
+- **macOS:** 13+ (uses `osascript`; first run prompts for "Automation" permission to control Spotify / Music.app)
 
 ## Usage
 
@@ -87,18 +89,25 @@ RUST_LOG=lyrica_provider=debug lyrica
 
 ## Configuration
 
-Lyrica reads `~/.config/lyrica/config.toml` (or `$XDG_CONFIG_HOME/lyrica/config.toml`) at startup. The file is optional — defaults are used if missing or unparseable.
+Lyrica reads its config file at startup. The file is optional — defaults are used if missing or unparseable.
+
+| Platform | Config path | Cache path |
+|---|---|---|
+| Linux | `$XDG_CONFIG_HOME/lyrica/config.toml` (or `~/.config/lyrica/config.toml`) | `~/.cache/lyrica/lyrics` |
+| macOS | `~/Library/Application Support/lyrica/config.toml` | `~/Library/Caches/lyrica/lyrics` |
 
 ### Example
 
 ```toml
-# Preferred MPRIS player. Substring match (case-insensitive) against
-# `org.mpris.MediaPlayer2.<name>`. Leave empty for auto-pick.
-# List active players with: `busctl --user list | grep mpris`
+# Preferred player. Substring match (case-insensitive).
+#   Linux: matches against `org.mpris.MediaPlayer2.<name>`.
+#          List active players with: `busctl --user list | grep mpris`
+#   macOS: matches against the app display name ("Spotify", "Music").
+# Leave empty for auto-pick.
 player = "spotify"
 
 # When true, only attach to the preferred player above. If it isn't running,
-# lyrica waits instead of falling back to another MPRIS source.
+# lyrica waits instead of falling back to another source.
 strict_player = true
 
 # Per-provider weight applied multiplicatively to each candidate's quality
@@ -144,8 +153,8 @@ See [Docs/API.md](Docs/API.md) for full endpoint documentation.
 ```
                                     watch channel
   ┌─────────────┐  PlayerEvent  ┌──────────────┐  DisplayState  ┌────────────────┐
-  │ MPRIS Player│ ────────────> │  Scheduler   │ ─────────────> │ TUI (ratatui)  │
-  │   (zbus)    │               │              │                │ HTTP API (axum)│
+  │   Player    │ ────────────> │  Scheduler   │ ─────────────> │ TUI (ratatui)  │
+  │ MPRIS/macOS │               │              │                │ HTTP API (axum)│
   └─────────────┘               └──────┬───────┘                └────────────────┘
                                        │
                                        v
@@ -170,7 +179,7 @@ See [Docs/API.md](Docs/API.md) for full endpoint documentation.
 | Crate | Purpose |
 |---|---|
 | `lyrica-core` | Core types, traits, LRC/LRCX parser |
-| `lyrica-player` | MPRIS D-Bus player integration |
+| `lyrica-player` | Player integration (MPRIS on Linux, AppleScript on macOS) |
 | `lyrica-provider` | Lyrics source providers (NetEase, QQ, Kugou, LRCLIB) |
 | `lyrica-cache` | File-system lyrics cache |
 | `lyrica-scheduler` | Core event loop and line position scheduling |
@@ -188,14 +197,14 @@ See [Docs/API.md](Docs/API.md) for full endpoint documentation.
 
 ## Roadmap
 
-- [x] MPRIS player detection and seek tracking
+- [x] Linux MPRIS player detection and seek tracking
+- [x] macOS Spotify / Music.app player detection
 - [x] Multi-source parallel lyrics search
 - [x] LRC / LRCX parsing (with translations and word-level timestamps)
 - [x] TUI synchronized display with search and offset adjustment
 - [x] HTTP REST API
 - [x] Lyrics caching
 - [x] TOML configuration file with hot-reloadable provider weights
-- [ ] GTK4 transparent desktop overlay with karaoke effect
 - [ ] WebSocket real-time push
 - [ ] systemd user service
 

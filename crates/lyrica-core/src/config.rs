@@ -83,16 +83,14 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Resolve the default config file path: `$XDG_CONFIG_HOME/lyrica/config.toml`.
+    /// Resolve the default config file path. Per-platform:
+    ///   Linux:  `$XDG_CONFIG_HOME/lyrica/config.toml` (or `~/.config/lyrica/config.toml`)
+    ///   macOS:  `~/Library/Application Support/lyrica/config.toml`
     pub fn default_path() -> PathBuf {
-        let dir = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-            PathBuf::from(xdg)
-        } else if let Ok(home) = std::env::var("HOME") {
-            PathBuf::from(home).join(".config")
-        } else {
-            PathBuf::from(".")
-        };
-        dir.join("lyrica").join("config.toml")
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("lyrica")
+            .join("config.toml")
     }
 
     /// Load config from the default path. Returns defaults if the file does

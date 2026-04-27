@@ -115,14 +115,10 @@ fn spawn_config_watcher(weights: WeightsHandle) {
 }
 
 fn log_path() -> std::path::PathBuf {
-    let dir = if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
-        std::path::PathBuf::from(xdg)
-    } else if let Ok(home) = std::env::var("HOME") {
-        std::path::PathBuf::from(home).join(".cache")
-    } else {
-        std::path::PathBuf::from("/tmp")
-    };
-    dir.join("lyrica").join("lyrica.log")
+    dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("lyrica")
+        .join("lyrica.log")
 }
 
 #[tokio::main]
@@ -169,7 +165,7 @@ async fn main() -> Result<()> {
 
     // Initialize components. All ProviderGroups share one weights handle so
     // hot-reload updates propagate to scheduler / API / TUI at once.
-    let player = lyrica_player::MprisPlayer::new(&config.player, config.strict_player).await?;
+    let player = lyrica_player::DefaultPlayer::new(&config.player, config.strict_player).await?;
     let provider = lyrica_provider::ProviderGroup::with_config(&config);
     let weights_handle = provider.weights_handle();
     let cache = lyrica_cache::LyricsCache::new(None)?;

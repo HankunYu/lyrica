@@ -5,7 +5,9 @@ use tracing::info;
 
 use lyrica_core::lyrics::Lyrics;
 
-/// File-based lyrics cache stored at ~/.cache/lyrica/lyrics/.
+/// File-based lyrics cache. Default location is per-platform:
+///   Linux:   `$XDG_CACHE_HOME/lyrica/lyrics` (or `~/.cache/lyrica/lyrics`)
+///   macOS:   `~/Library/Caches/lyrica/lyrics`
 pub struct LyricsCache {
     cache_dir: PathBuf,
 }
@@ -65,15 +67,8 @@ impl LyricsCache {
 }
 
 fn default_cache_dir() -> PathBuf {
-    dirs_path().join("lyrica").join("lyrics")
-}
-
-fn dirs_path() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
-        PathBuf::from(xdg)
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".cache")
-    } else {
-        PathBuf::from("/tmp")
-    }
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("lyrica")
+        .join("lyrics")
 }
