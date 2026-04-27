@@ -11,4 +11,5 @@ anyhow.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
+dirs.workspace = true
 regex = "1"
